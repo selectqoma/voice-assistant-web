@@ -138,7 +138,7 @@
             return res.json();
         }
 
-        function openSonioxSocketDirect(tempKey, model, languageHints, sampleRate) {
+        function openSonioxSocketDirect(tempKey, modelId, languageHints, sampleRate) {
             const url = 'wss://stt-rt.soniox.com/transcribe-websocket';
             ws = new WebSocket(url);
             ws.binaryType = 'arraybuffer';
@@ -146,6 +146,7 @@
                 connState.textContent = 'WS: connected';
                 const config = {
                     api_key: tempKey,
+                    model_id: modelId,
                     audio_format: 'pcm_s16le',
                     sample_rate_hz: sampleRate,
                     num_channels: 1,
@@ -325,10 +326,8 @@
             audioCtx = new (window.AudioContext || window.webkitAudioContext)();
             const sampleRate = audioCtx.sampleRate; // typically 44100 or 48000
             // Get dev temp key/config then open Soniox WS directly
-            const { temp_key } = await fetchTempKey(languageHints);
-            // Use recommended RT model string
-            const rtModel = 'soniox/embedded/v1/rt';
-            openSonioxSocketDirect(temp_key, rtModel, languageHints, sampleRate);
+            const { temp_key, model_id } = await fetchTempKey(languageHints);
+            openSonioxSocketDirect(temp_key, model_id, languageHints, sampleRate);
 
             const source = audioCtx.createMediaStreamSource(mediaStream);
             try {
