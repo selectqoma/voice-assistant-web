@@ -1,19 +1,23 @@
 """
-Simple Flask application providing a bare‑bones interface for a voice assistant demo.
+Simple Flask application providing a real‑time voice assistant demo.
 
-This app serves a single web page (index.html) where users can upload an audio file
-to simulate a speech‑to‑text (STT) request and send a text message to simulate
-a large language model (LLM) response. Both endpoints currently return hard‑coded
-placeholders, since integrating real speech APIs requires network access and
-authentication. In a production environment you would replace the placeholder
-functions with actual API calls to your preferred STT, LLM and TTS services.
+Run with uv (recommended):
 
-To run this app locally:
+    # one-time: install uv (https://github.com/astral-sh/uv)
+    curl -LsSf https://astral.sh/uv/install.sh | sh
+    # create/activate venv and install deps
+    uv venv
+    source .venv/bin/activate
+    uv sync
+    # start server
+    uv run python app.py
+
+Or with pip:
 
     pip install -r requirements.txt
     python app.py
 
-Then navigate to http://localhost:5000 in your browser.
+Navigate to http://localhost:5000 in your browser.
 """
 
 import os
