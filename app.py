@@ -108,17 +108,7 @@ def index():
     return render_template("index.html")
 
 
-@app.route("/transcribe", methods=["POST"])
-def transcribe():
-    """Handle audio file uploads and return a transcribed placeholder."""
-    file = request.files.get("audio")
-    if not file:
-        return jsonify({"error": "No file uploaded"}), 400
-
-    # Read file bytes for processing (unused in stub)
-    audio_bytes = file.read()
-    text = transcribe_audio_stub(audio_bytes)
-    return jsonify({"transcription": text})
+## Legacy upload endpoint removed for simplified live-only UI
 
 
 @app.route("/respond", methods=["POST"])

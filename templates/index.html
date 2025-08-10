@@ -44,11 +44,10 @@
     </style>
 </head>
 <body>
-    <h1>Voice Assistant Demo</h1>
+    <h1>Voice Assistant</h1>
     <section id="live-stt">
-        <h2>Live Conversation</h2>
-        <div style="margin-bottom: 0.5rem;">
-            <label for="languageSelect">Language</label>
+        <div style="margin-bottom: 0.5rem; display:flex; gap:0.75rem; align-items:center;">
+            <label for="languageSelect" style="margin:0;">Language</label>
             <select id="languageSelect">
                 <option value="auto" selected>Auto</option>
                 <option value="en">English</option>
@@ -65,73 +64,12 @@
             <span id="connState">WS: disconnected</span>
             <span id="botState">Bot: idle</span>
         </div>
-        <div id="transcript" class="output" style="height: 180px; overflow:auto; margin-top:0.75rem;"></div>
+        <div id="transcript" class="output" style="height: 220px; overflow:auto; margin-top:0.75rem;"></div>
         <audio id="ttsAudio" autoplay></audio>
-    </section>
-    <hr />
-    <section id="stt-section">
-        <h2>Upload Audio for Transcription (legacy demo)</h2>
-        <form id="uploadForm">
-            <label for="audio">Choose an audio file (wav/mp3)</label>
-            <input type="file" id="audio" name="audio" accept="audio/*" required>
-            <button type="submit">Transcribe</button>
-        </form>
-        <div id="transcriptionResult" class="output" style="display:none;"></div>
-    </section>
-    <section id="chat-section">
-        <h2>Chat with the Assistant (text)</h2>
-        <label for="message">Enter your message</label>
-        <input type="text" id="message" placeholder="Type something..." required>
-        <button id="sendBtn">Send</button>
-        <div id="responseResult" class="output" style="display:none;"></div>
     </section>
 
     <script>
-        // Handle audio upload and transcription (legacy demo)
-        document.getElementById('uploadForm').addEventListener('submit', async function (e) {
-            e.preventDefault();
-            const fileInput = document.getElementById('audio');
-            const file = fileInput.files[0];
-            if (!file) return;
-            const formData = new FormData();
-            formData.append('audio', file);
-            const res = await fetch('/transcribe', {
-                method: 'POST',
-                body: formData
-            });
-            const data = await res.json();
-            const outputDiv = document.getElementById('transcriptionResult');
-            if (data.transcription) {
-                outputDiv.textContent = data.transcription;
-                outputDiv.style.display = 'block';
-            } else if (data.error) {
-                outputDiv.textContent = 'Error: ' + data.error;
-                outputDiv.style.display = 'block';
-            }
-        });
-
-        // Handle sending text message and receiving response
-        document.getElementById('sendBtn').addEventListener('click', async function () {
-            const messageInput = document.getElementById('message');
-            const text = messageInput.value.trim();
-            if (!text) return;
-            const res = await fetch('/respond', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json'
-                },
-                body: JSON.stringify({ text })
-            });
-            const data = await res.json();
-            const outputDiv = document.getElementById('responseResult');
-            if (data.response) {
-                outputDiv.textContent = data.response;
-                outputDiv.style.display = 'block';
-            } else if (data.error) {
-                outputDiv.textContent = 'Error: ' + data.error;
-                outputDiv.style.display = 'block';
-            }
-        });
+        // Removed legacy upload/text chat; focusing on live voice-to-voice
 
         // Live STT with Soniox via direct WebSocket
         const startBtn = document.getElementById('startBtn');
