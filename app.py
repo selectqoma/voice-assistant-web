@@ -48,7 +48,7 @@ SONIOX_API_KEY = os.getenv("SONIOX_API_KEY", "")
 ELEVEN_API_KEY = os.getenv("ELEVEN_API_KEY", "")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 
-DEFAULT_SONIOX_MODEL = os.getenv("SONIOX_MODEL", "en_v2_lowlatency")
+DEFAULT_SONIOX_MODEL = os.getenv("SONIOX_MODEL", "stt-rt")
 DEFAULT_LANGUAGE_HINTS = os.getenv("LANGUAGE_HINTS", "en,fr,nl").split(",")
 DEFAULT_ELEVEN_VOICE_EN = os.getenv("ELEVEN_VOICE_EN", "21m00Tcm4TlvDq8ikWAM")
 DEFAULT_ELEVEN_VOICE_FR = os.getenv("ELEVEN_VOICE_FR", "EXAVITQu4vr4xnSDxMaL")

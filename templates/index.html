@@ -326,7 +326,9 @@
             const sampleRate = audioCtx.sampleRate; // typically 44100 or 48000
             // Get dev temp key/config then open Soniox WS directly
             const { temp_key, model, language_hints } = await fetchTempKey(languageHints);
-            openSonioxSocketDirect(temp_key, model, language_hints, sampleRate);
+            // Force a known valid RT model if backend returns legacy value
+            const rtModel = (model && model.includes('stt')) ? model : 'stt-rt';
+            openSonioxSocketDirect(temp_key, rtModel, language_hints, sampleRate);
 
             const source = audioCtx.createMediaStreamSource(mediaStream);
             try {
