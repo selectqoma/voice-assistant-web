@@ -261,64 +261,14 @@
             // Append bot text to transcript area
             finalSegments.push({ text: `\nAssistant: ${reply}`, ts: Date.now() });
             renderTranscript();
-            // Request TTS stream
+            // Request TTS via GET stream to simplify playback
             botState.textContent = 'Bot: speaking…';
-            // Stream playback with MediaSource for low-latency
-            mediaSource = new MediaSource();
-            const objUrl = URL.createObjectURL(mediaSource);
-            ttsAudio.src = objUrl;
+            const q = new URLSearchParams({ text: reply, lang });
+            ttsAudio.src = `/tts-stream?${q.toString()}`;
             playingTts = true;
-            mediaSource.addEventListener('sourceopen', async () => {
-                sourceBuffer = mediaSource.addSourceBuffer('audio/mpeg');
-                sourceBuffer.mode = 'segments';
-                sourceBuffer.addEventListener('updateend', () => {
-                    if (sbQueue.length && !sourceBuffer.updating) {
-                        sourceBuffer.appendBuffer(sbQueue.shift());
-                    }
-                    if (!sbQueue.length && !sourceBuffer.updating && mediaSource.readyState === 'open' && ttsDone) {
-                        try { mediaSource.endOfStream(); } catch {}
-                    }
-                });
-
-                let ttsDone = false;
-                const res = await fetch('/tts', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ text: reply, lang })
-                });
-                if (!res.ok || !res.body) {
-                    botState.textContent = 'Bot: TTS error';
-                    playingTts = false;
-                    return;
-                }
-                const reader = res.body.getReader();
-                const pump = async () => {
-                    const { done, value } = await reader.read();
-                    if (done) {
-                        ttsDone = true;
-                        if (!sourceBuffer.updating && mediaSource.readyState === 'open') {
-                            try { mediaSource.endOfStream(); } catch {}
-                        }
-                        return;
-                    }
-                    if (value && value.byteLength) {
-                        if (sourceBuffer.updating || sbQueue.length) {
-                            sbQueue.push(value.buffer.slice(0));
-                        } else {
-                            try { sourceBuffer.appendBuffer(value.buffer); } catch (e) {
-                                // On quota errors, queue and retry later
-                                sbQueue.push(value.buffer.slice(0));
-                            }
-                        }
-                    }
-                    pump();
-                };
-                pump();
-            });
             ttsAudio.onended = () => {
                 playingTts = false;
                 botState.textContent = 'Bot: idle';
-                try { URL.revokeObjectURL(ttsAudio.src); } catch {}
             };
         }
 

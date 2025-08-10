@@ -180,6 +180,47 @@ def tts_route():
     return Response(eleven_stream(), mimetype="audio/mpeg")
 
 
+# Simple GET streaming endpoint for direct <audio src> playback
+@app.route("/tts-stream", methods=["GET"])
+def tts_stream_route():
+    text = request.args.get("text", "")
+    lang = request.args.get("lang", "en")
+    voice_id = request.args.get("voice_id") or choose_eleven_voice(lang)
+
+    if not ELEVEN_API_KEY:
+        return jsonify({"error": "Missing ELEVEN_API_KEY"}), 500
+    if not text:
+        return jsonify({"error": "No text provided"}), 400
+
+    url = f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}/stream"
+    headers = {
+        "xi-api-key": ELEVEN_API_KEY,
+        "Content-Type": "application/json",
+        "Accept": "audio/mpeg",
+    }
+    payload = {
+        "text": text,
+        "model_id": ELEVEN_MODEL_ID,
+        "voice_settings": {"stability": 0.4, "similarity_boost": 0.8},
+        "optimize_streaming_latency": 4,
+    }
+
+    def eleven_stream():
+        with httpx.Client(timeout=30.0) as client:
+            with client.stream("POST", url, headers=headers, json=payload) as r:
+                if r.status_code != 200:
+                    try:
+                        err_text = r.text
+                    except Exception:
+                        err_text = ""
+                    logger.error("TTS error %s: %s", r.status_code, err_text)
+                    return
+                for chunk in r.iter_bytes():
+                    if chunk:
+                        yield chunk
+
+    return Response(eleven_stream(), mimetype="audio/mpeg")
+
 # Serve static files for worklets
 @app.route('/static/<path:filename>')
 def static_files(filename: str):
