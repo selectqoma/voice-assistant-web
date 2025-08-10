@@ -148,23 +148,32 @@ def tts_route():
     if not text:
         return jsonify({"error": "No text provided"}), 400
 
-    # Stream audio back to client as audio/mpeg
-    async def eleven_stream():
-        url = f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}/stream"
-        headers = {
-            "xi-api-key": ELEVEN_API_KEY,
-            "Content-Type": "application/json",
-            "Accept": "audio/mpeg",
-        }
-        payload = {
-            "text": text,
-            "model_id": ELEVEN_MODEL_ID,
-            "voice_settings": {"stability": 0.4, "similarity_boost": 0.8},
-            "optimize_streaming_latency": 4,
-        }
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            async with client.stream("POST", url, headers=headers, json=payload) as r:
-                async for chunk in r.aiter_bytes():
+    url = f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}/stream"
+    headers = {
+        "xi-api-key": ELEVEN_API_KEY,
+        "Content-Type": "application/json",
+        "Accept": "audio/mpeg",
+    }
+    payload = {
+        "text": text,
+        "model_id": ELEVEN_MODEL_ID,
+        "voice_settings": {"stability": 0.4, "similarity_boost": 0.8},
+        "optimize_streaming_latency": 4,
+    }
+
+    def eleven_stream():
+        with httpx.Client(timeout=30.0) as client:
+            with client.stream("POST", url, headers=headers, json=payload) as r:
+                if r.status_code != 200:
+                    # Surface error details in logs and to client
+                    try:
+                        err_text = r.text
+                    except Exception:
+                        err_text = ""
+                    logger.error("TTS error %s: %s", r.status_code, err_text)
+                    # Yield nothing; Response will be empty. Caller should handle non-OK via fetch check.
+                    return
+                for chunk in r.iter_bytes():
                     if chunk:
                         yield chunk
 
