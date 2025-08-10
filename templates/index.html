@@ -92,6 +92,8 @@
         let mediaSource = null;
         let sourceBuffer = null;
         let sbQueue = [];
+        let endpointTimer = null;
+        let lastFinalSent = '';
 
         function renderTranscript() {
             const finalText = finalSegments.map(s => s.text).join(' ');
@@ -150,6 +152,7 @@
                     language_hints: languageHints,
                     interim_results: true
                 };
+                console.log('WS sending config', config);
                 ws.send(JSON.stringify(config));
             };
             ws.onmessage = (event) => {
@@ -158,6 +161,7 @@
                     const txt = event.data.trim();
                     if (!txt) return;
                     const msg = JSON.parse(txt);
+                    console.log('WS message', msg);
                     // Example handling: { type: 'transcript', items: [{text, is_final}] }
                     if (msg.type === 'transcript' && Array.isArray(msg.items)) {
                         let anyFinal = false;
@@ -171,16 +175,22 @@
                             }
                         });
                         renderTranscript();
-                        if (anyFinal) {
-                            // On endpoint detection heuristic: if item has endpoint flag
-                            if (msg.endpoint || !isRecording) {
-                                const userText = finalSegments.map(s => s.text).join(' ');
-                                handleUserUtterance(userText);
-                                finalSegments = [];
-                                currentPartial = '';
-                                renderTranscript();
+                        resetEndpointTimer();
+                    } else if (msg.result && Array.isArray(msg.result.words)) {
+                        // Alternate schema support: accumulate words
+                        let anyFinal = false;
+                        const partialWords = [];
+                        msg.result.words.forEach(w => {
+                            if (w.is_final || w.final) {
+                                finalSegments.push({ text: w.text, ts: Date.now() });
+                                anyFinal = true;
+                            } else {
+                                partialWords.push(w.text);
                             }
-                        }
+                        });
+                        currentPartial = partialWords.join(' ');
+                        renderTranscript();
+                        resetEndpointTimer();
                     } else if (msg.type === 'endpoint') {
                         const userText = finalSegments.map(s => s.text).join(' ');
                         handleUserUtterance(userText);
@@ -194,6 +204,20 @@
                     console.error('WS message parse error', e);
                 }
             };
+        function resetEndpointTimer() {
+            if (endpointTimer) clearTimeout(endpointTimer);
+            endpointTimer = setTimeout(() => {
+                const text = finalSegments.map(s => s.text).join(' ').trim();
+                if (text && text !== lastFinalSent) {
+                    lastFinalSent = text;
+                    handleUserUtterance(text);
+                    // Keep finalSegments for transcript history; clear partial
+                    currentPartial = '';
+                    renderTranscript();
+                }
+            }, 1200);
+        }
+
             ws.onerror = (e) => {
                 console.error('WS error', e);
                 connState.textContent = 'WS: error';
