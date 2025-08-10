@@ -82,12 +82,16 @@
         const ttsAudio = document.getElementById('ttsAudio');
 
         let mediaStream = null;
-        let mediaRecorder = null;
+        let audioCtx = null;
+        let scriptNode = null;
         let ws = null;
         let isRecording = false;
         let currentPartial = '';
         let finalSegments = [];
         let playingTts = false;
+        let mediaSource = null;
+        let sourceBuffer = null;
+        let sbQueue = [];
 
         function renderTranscript() {
             const finalText = finalSegments.map(s => s.text).join(' ');
@@ -107,9 +111,17 @@
 
         function stopTtsPlayback() {
             if (!playingTts) return;
-            ttsAudio.pause();
-            // Reset src to stop streaming playback
-            ttsAudio.src = '';
+            try {
+                ttsAudio.pause();
+                ttsAudio.removeAttribute('src');
+                ttsAudio.load();
+            } catch (_) {}
+            if (mediaSource && mediaSource.readyState === 'open') {
+                try { mediaSource.endOfStream(); } catch {}
+            }
+            mediaSource = null;
+            sourceBuffer = null;
+            sbQueue = [];
             playingTts = false;
             botState.textContent = 'Bot: idle';
         }
@@ -124,7 +136,7 @@
             return res.json();
         }
 
-        function openSonioxSocket(tempKey, model, languageHints) {
+        function openSonioxSocket(tempKey, model, languageHints, sampleRate) {
             // Soniox RT endpoint
             const url = 'wss://stt-rt.soniox.com/transcribe-websocket';
             ws = new WebSocket(url);
@@ -136,12 +148,12 @@
                 const config = {
                     api_key: tempKey,
                     model: model,
-                    audio_format: 'auto',
+                    audio_format: 'pcm_s16le',
+                    sample_rate_hz: sampleRate,
                     language_hints: languageHints,
-                    enable_abort: true,
                     interim_results: true
                 };
-                ws.send(JSON.stringify({ config }));
+                ws.send(JSON.stringify(config));
             };
             ws.onmessage = (event) => {
                 try {
@@ -210,43 +222,62 @@
             renderTranscript();
             // Request TTS stream
             botState.textContent = 'Bot: speaking…';
-            const ttsRes = await fetch('/tts', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ text: reply, lang })
-            });
-            if (!ttsRes.ok) {
-                botState.textContent = 'Bot: TTS error';
-                return;
-            }
-            // Create object URL from streaming body
-            const reader = ttsRes.body.getReader();
-            const stream = new ReadableStream({
-                start(controller) {
-                    function push() {
-                        reader.read().then(({ done, value }) => {
-                            if (done) {
-                                controller.close();
-                                playingTts = false;
-                                botState.textContent = 'Bot: idle';
-                                return;
-                            }
-                            controller.enqueue(value);
-                            push();
-                        });
-                    }
-                    push();
-                }
-            });
-            const response = new Response(stream, { headers: { 'Content-Type': 'audio/mpeg' }});
-            const blob = await response.blob();
-            const url = URL.createObjectURL(blob);
-            ttsAudio.src = url;
+            // Stream playback with MediaSource for low-latency
+            mediaSource = new MediaSource();
+            const objUrl = URL.createObjectURL(mediaSource);
+            ttsAudio.src = objUrl;
             playingTts = true;
+            mediaSource.addEventListener('sourceopen', async () => {
+                sourceBuffer = mediaSource.addSourceBuffer('audio/mpeg');
+                sourceBuffer.mode = 'segments';
+                sourceBuffer.addEventListener('updateend', () => {
+                    if (sbQueue.length && !sourceBuffer.updating) {
+                        sourceBuffer.appendBuffer(sbQueue.shift());
+                    }
+                    if (!sbQueue.length && !sourceBuffer.updating && mediaSource.readyState === 'open' && ttsDone) {
+                        try { mediaSource.endOfStream(); } catch {}
+                    }
+                });
+
+                let ttsDone = false;
+                const res = await fetch('/tts', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ text: reply, lang })
+                });
+                if (!res.ok || !res.body) {
+                    botState.textContent = 'Bot: TTS error';
+                    playingTts = false;
+                    return;
+                }
+                const reader = res.body.getReader();
+                const pump = async () => {
+                    const { done, value } = await reader.read();
+                    if (done) {
+                        ttsDone = true;
+                        if (!sourceBuffer.updating && mediaSource.readyState === 'open') {
+                            try { mediaSource.endOfStream(); } catch {}
+                        }
+                        return;
+                    }
+                    if (value && value.byteLength) {
+                        if (sourceBuffer.updating || sbQueue.length) {
+                            sbQueue.push(value.buffer.slice(0));
+                        } else {
+                            try { sourceBuffer.appendBuffer(value.buffer); } catch (e) {
+                                // On quota errors, queue and retry later
+                                sbQueue.push(value.buffer.slice(0));
+                            }
+                        }
+                    }
+                    pump();
+                };
+                pump();
+            });
             ttsAudio.onended = () => {
                 playingTts = false;
                 botState.textContent = 'Bot: idle';
-                URL.revokeObjectURL(url);
+                try { URL.revokeObjectURL(ttsAudio.src); } catch {}
             };
         }
 
@@ -267,29 +298,31 @@
             const selected = languageSelect.value;
             const languageHints = selected === 'auto' ? ['en','fr','nl'] : [selected];
             const { temp_key, model, language_hints } = await fetchTempKey(languageHints);
-            openSonioxSocket(temp_key, model, language_hints);
 
-            // Use MediaRecorder with audio/webm;codecs=opus when available
-            const options = { mimeType: 'audio/webm;codecs=opus' };
-            try {
-                mediaRecorder = new MediaRecorder(mediaStream, options);
-            } catch (e) {
-                mediaRecorder = new MediaRecorder(mediaStream);
-            }
+            // Set up PCM streaming via Web Audio API
+            audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+            const sampleRate = audioCtx.sampleRate; // typically 44100 or 48000
+            openSonioxSocket(temp_key, model, language_hints, sampleRate);
 
-            mediaRecorder.ondataavailable = (ev) => {
-                if (ws && ws.readyState === WebSocket.OPEN && ev.data && ev.data.size > 0) {
-                    ev.data.arrayBuffer().then(buf => {
-                        ws.send(buf);
-                    });
+            const source = audioCtx.createMediaStreamSource(mediaStream);
+            scriptNode = audioCtx.createScriptProcessor(4096, 1, 1);
+            scriptNode.onaudioprocess = (audioProcessingEvent) => {
+                if (!ws || ws.readyState !== WebSocket.OPEN) return;
+                const inputBuffer = audioProcessingEvent.inputBuffer;
+                const inputData = inputBuffer.getChannelData(0);
+                // Convert Float32 [-1,1] to 16-bit PCM
+                const pcmBuffer = new ArrayBuffer(inputData.length * 2);
+                const view = new DataView(pcmBuffer);
+                let offset = 0;
+                for (let i = 0; i < inputData.length; i++, offset += 2) {
+                    let s = Math.max(-1, Math.min(1, inputData[i]));
+                    view.setInt16(offset, s < 0 ? s * 0x8000 : s * 0x7fff, true);
                 }
+                ws.send(pcmBuffer);
             };
-            mediaRecorder.onstop = () => {
-                if (ws && ws.readyState === WebSocket.OPEN) {
-                    ws.send(JSON.stringify({ eos: true }));
-                }
-            };
-            mediaRecorder.start(200); // 200ms chunks
+            source.connect(scriptNode);
+            scriptNode.connect(audioCtx.destination);
+
             isRecording = true;
             startBtn.disabled = true;
             stopBtn.disabled = false;
@@ -301,9 +334,21 @@
             startBtn.disabled = false;
             stopBtn.disabled = true;
             micState.textContent = 'Mic: idle';
-            try { mediaRecorder.stop(); } catch {}
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                try { ws.send(JSON.stringify({ eos: true })); } catch {}
+                ws.close();
+            }
+            if (scriptNode) {
+                try { scriptNode.disconnect(); } catch {}
+                scriptNode = null;
+            }
+            if (audioCtx) {
+                try { audioCtx.close(); } catch {}
+                audioCtx = null;
+            }
             if (mediaStream) {
                 mediaStream.getTracks().forEach(t => t.stop());
+                mediaStream = null;
             }
         });
     </script>
