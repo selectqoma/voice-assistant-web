@@ -232,7 +232,7 @@
                     currentPartial = '';
                     renderTranscript();
                 }
-            }, 1200);
+            }, 400);
         }
 
             ws.onerror = (e) => {
@@ -341,6 +341,15 @@
             startBtn.disabled = false;
             stopBtn.disabled = true;
             micState.textContent = 'Mic: idle';
+            // On explicit stop, immediately send any accumulated final transcript
+            if (endpointTimer) clearTimeout(endpointTimer);
+            const immediateText = finalSegments.map(s => s.text).join(' ').trim() || currentPartial.trim();
+            if (immediateText && immediateText !== lastFinalSent) {
+                lastFinalSent = immediateText;
+                handleUserUtterance(immediateText);
+                currentPartial = '';
+                renderTranscript();
+            }
             if (ws && ws.readyState === WebSocket.OPEN) {
                 try { ws.send(JSON.stringify({ eos: true })); } catch {}
                 ws.close();
