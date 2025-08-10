@@ -138,7 +138,7 @@
             return res.json();
         }
 
-        function openSonioxSocketDirect(tempKey, modelId, languageHints, sampleRate) {
+        function openSonioxSocketDirect(tempKey, _unused, languageHints, sampleRate) {
             const url = 'wss://stt-rt.soniox.com/transcribe-websocket';
             ws = new WebSocket(url);
             ws.binaryType = 'arraybuffer';
@@ -146,9 +146,9 @@
                 connState.textContent = 'WS: connected';
                 const config = {
                     api_key: tempKey,
-                    ...(modelId ? { model_id: modelId } : {}),
+                    model: 'stt-rt-preview',
                     audio_format: 'pcm_s16le',
-                    sample_rate_hz: sampleRate,
+                    sample_rate: sampleRate,
                     num_channels: 1,
                     language_hints: languageHints,
                     interim_results: true
