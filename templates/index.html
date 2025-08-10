@@ -328,7 +328,7 @@
             const { temp_key } = await fetchTempKey(languageHints);
             // Use recommended RT model string
             const rtModel = 'soniox/embedded/v1/rt';
-            openSonioxSocketDirect(temp_key, rtModel, language_hints, sampleRate);
+            openSonioxSocketDirect(temp_key, rtModel, languageHints, sampleRate);
 
             const source = audioCtx.createMediaStreamSource(mediaStream);
             try {
