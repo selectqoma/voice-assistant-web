@@ -94,6 +94,8 @@
         let sbQueue = [];
         let endpointTimer = null;
         let lastFinalSent = '';
+        let recorder = null;
+        let usingOpus = false;
         let pendingReplyPromise = null;
         let pendingReplyText = '';
 
@@ -146,7 +148,13 @@
             ws.binaryType = 'arraybuffer';
             ws.onopen = () => {
                 connState.textContent = 'WS: connected';
-                const config = {
+                const config = usingOpus ? {
+                    api_key: tempKey,
+                    model: 'stt-rt-preview',
+                    audio_format: 'webm_opus',
+                    language_hints: languageHints,
+                    interim_results: true
+                } : {
                     api_key: tempKey,
                     model: 'stt-rt-preview',
                     audio_format: 'pcm_s16le',
@@ -372,48 +380,63 @@
 
             const selected = languageSelect.value;
             const languageHints = selected === 'auto' ? ['en','fr','nl'] : [selected];
-            // Set up PCM streaming via Web Audio API using AudioWorklet
-            audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-            const sampleRate = 16000; // match worklet downsampling target for lower latency
-            // Get dev temp key/config then open Soniox WS directly
-            const { temp_key } = await fetchTempKey(languageHints);
-            openSonioxSocketDirect(temp_key, null, languageHints, sampleRate);
+            // Prefer ultra-low-latency webm/opus if supported
+            usingOpus = false;
+            if (window.MediaRecorder && MediaRecorder.isTypeSupported('audio/webm;codecs=opus')) {
+                try {
+                    recorder = new MediaRecorder(mediaStream, { mimeType: 'audio/webm;codecs=opus', audioBitsPerSecond: 24000 });
+                    usingOpus = true;
+                } catch {}
+            }
 
-            const source = audioCtx.createMediaStreamSource(mediaStream);
-            try {
-                await audioCtx.audioWorklet.addModule('/static/pcm-worklet.js');
-                const worklet = new AudioWorkletNode(audioCtx, 'pcm-worklet', { numberOfInputs: 1, numberOfOutputs: 1, channelCount: 1 });
-                worklet.port.postMessage({ targetRate: 16000 });
-                worklet.port.onmessage = (event) => {
-                    if (!ws || ws.readyState !== WebSocket.OPEN) return;
-                    const pcm = event.data;
-                    ws.send(pcm);
-                };
-                // connect but keep gain at 0 so it's inaudible
-                const gain = audioCtx.createGain();
-                gain.gain.value = 0;
-                source.connect(worklet);
-                worklet.connect(gain);
-                // Optionally render locally to keep AudioContext active
-                gain.connect(audioCtx.destination);
-            } catch (err) {
-                // Fallback to deprecated ScriptProcessor if worklet fails
-                console.warn('AudioWorklet unavailable, falling back to ScriptProcessor', err);
-                scriptNode = audioCtx.createScriptProcessor(4096, 1, 1);
-                scriptNode.onaudioprocess = (audioProcessingEvent) => {
-                    if (!ws || ws.readyState !== WebSocket.OPEN) return;
-                    const inputBuffer = audioProcessingEvent.inputBuffer;
-                    const inputData = inputBuffer.getChannelData(0);
-                    const pcmBuffer = new ArrayBuffer(inputData.length * 2);
-                    const view = new DataView(pcmBuffer);
-                    for (let i = 0; i < inputData.length; i++) {
-                        let s = Math.max(-1, Math.min(1, inputData[i]));
-                        view.setInt16(i * 2, s < 0 ? s * 0x8000 : s * 0x7fff, true);
+            const { temp_key } = await fetchTempKey(languageHints);
+            if (usingOpus) {
+                openSonioxSocketDirect(temp_key, null, languageHints, null);
+                recorder.ondataavailable = (ev) => {
+                    if (ws && ws.readyState === WebSocket.OPEN && ev.data && ev.data.size > 0) {
+                        ev.data.arrayBuffer().then(buf => ws.send(buf));
                     }
-                    ws.send(pcmBuffer);
                 };
-                source.connect(scriptNode);
-                scriptNode.connect(audioCtx.destination);
+                recorder.start(20); // ~20ms chunks for low latency
+            } else {
+                // Set up PCM streaming via Web Audio API using AudioWorklet
+                audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+                const sampleRate = 16000; // downsample target
+                openSonioxSocketDirect(temp_key, null, languageHints, sampleRate);
+
+                const source = audioCtx.createMediaStreamSource(mediaStream);
+                try {
+                    await audioCtx.audioWorklet.addModule('/static/pcm-worklet.js');
+                    const worklet = new AudioWorkletNode(audioCtx, 'pcm-worklet', { numberOfInputs: 1, numberOfOutputs: 1, channelCount: 1 });
+                    worklet.port.postMessage({ targetRate: 16000 });
+                    worklet.port.onmessage = (event) => {
+                        if (!ws || ws.readyState !== WebSocket.OPEN) return;
+                        const pcm = event.data;
+                        ws.send(pcm);
+                    };
+                    const gain = audioCtx.createGain();
+                    gain.gain.value = 0;
+                    source.connect(worklet);
+                    worklet.connect(gain);
+                    gain.connect(audioCtx.destination);
+                } catch (err) {
+                    console.warn('AudioWorklet unavailable, falling back to ScriptProcessor', err);
+                    scriptNode = audioCtx.createScriptProcessor(4096, 1, 1);
+                    scriptNode.onaudioprocess = (audioProcessingEvent) => {
+                        if (!ws || ws.readyState !== WebSocket.OPEN) return;
+                        const inputBuffer = audioProcessingEvent.inputBuffer;
+                        const inputData = inputBuffer.getChannelData(0);
+                        const pcmBuffer = new ArrayBuffer(inputData.length * 2);
+                        const view = new DataView(pcmBuffer);
+                        for (let i = 0; i < inputData.length; i++) {
+                            let s = Math.max(-1, Math.min(1, inputData[i]));
+                            view.setInt16(i * 2, s < 0 ? s * 0x8000 : s * 0x7fff, true);
+                        }
+                        ws.send(pcmBuffer);
+                    };
+                    source.connect(scriptNode);
+                    scriptNode.connect(audioCtx.destination);
+                }
             }
 
             isRecording = true;
@@ -439,6 +462,12 @@
             if (ws && ws.readyState === WebSocket.OPEN) {
                 try { ws.send(JSON.stringify({ eos: true })); } catch {}
                 ws.close();
+            }
+            // Stop Opus recorder if used
+            if (usingOpus && recorder) {
+                try { recorder.stop(); } catch {}
+                recorder = null;
+                usingOpus = false;
             }
             if (scriptNode) {
                 try { scriptNode.disconnect(); } catch {}
