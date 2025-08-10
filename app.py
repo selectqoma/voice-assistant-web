@@ -28,7 +28,7 @@ import logging
 from datetime import datetime
 from typing import Dict, Any, Optional
 
-from flask import Flask, render_template, request, jsonify, Response
+from flask import Flask, render_template, request, jsonify, Response, send_from_directory
 from flask_sock import Sock
 from dotenv import load_dotenv
 import httpx
@@ -168,6 +168,11 @@ def tts_route():
 
     return Response(eleven_stream(), mimetype="audio/mpeg")
 
+
+# Serve static files for worklets
+@app.route('/static/<path:filename>')
+def static_files(filename: str):
+    return send_from_directory(os.path.join(app.root_path, 'static'), filename)
 
 # Simple WebSocket endpoint to forward STT events to/from client if needed in future
 # For now, we will do Soniox WS directly from client with a temp key endpoint below.
