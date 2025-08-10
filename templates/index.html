@@ -94,6 +94,8 @@
         let sbQueue = [];
         let endpointTimer = null;
         let lastFinalSent = '';
+        let pendingReplyPromise = null;
+        let pendingReplyText = '';
 
         function renderTranscript() {
             const finalText = finalSegments.map(s => s.text).join(' ');
@@ -176,6 +178,7 @@
                             }
                         });
                         renderTranscript();
+                        maybePrefetchLLM();
                         resetEndpointTimer();
                     } else if (msg.result && Array.isArray(msg.result.words)) {
                         // Alternate schema support: accumulate words
@@ -191,6 +194,7 @@
                         });
                         currentPartial = partialWords.join(' ');
                         renderTranscript();
+                        maybePrefetchLLM();
                         resetEndpointTimer();
                     } else if (Array.isArray(msg.tokens)) {
                         // Schema with tokens array
@@ -207,6 +211,7 @@
                         // Join tokens without space to support languages without whitespace
                         currentPartial = partialTokens.join('');
                         renderTranscript();
+                        maybePrefetchLLM();
                         resetEndpointTimer();
                     } else if (msg.type === 'endpoint') {
                         const userText = finalSegments.map(s => s.text).join(' ');
@@ -227,12 +232,52 @@
                 const text = finalSegments.map(s => s.text).join(' ').trim();
                 if (text && text !== lastFinalSent) {
                     lastFinalSent = text;
-                    handleUserUtterance(text);
+                    playResponseFor(text);
                     // Keep finalSegments for transcript history; clear partial
                     currentPartial = '';
                     renderTranscript();
                 }
-            }, 400);
+            }, 250);
+        }
+
+        function maybePrefetchLLM() {
+            const partial = currentPartial.trim();
+            const finals = finalSegments.map(s => s.text).join(' ').trim();
+            const combined = (finals + ' ' + partial).trim();
+            if (!combined) return;
+            if (!pendingReplyPromise && combined.length >= 16) {
+                pendingReplyText = combined;
+                pendingReplyPromise = fetch('/respond', {
+                    method: 'POST', headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ text: combined })
+                }).then(r => r.json()).catch(() => null);
+            }
+        }
+
+        async function playResponseFor(text) {
+            // Try to use prefetched reply if it matches the current utterance prefix
+            let reply = '';
+            let lang = 'en';
+            if (pendingReplyPromise && pendingReplyText && text.startsWith(pendingReplyText)) {
+                const data = await pendingReplyPromise;
+                pendingReplyPromise = null;
+                pendingReplyText = '';
+                reply = (data && data.response) || '';
+                lang = (data && data.lang) || 'en';
+            }
+            if (!reply) {
+            const res = await fetch('/respond', {
+                    method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ text })
+            });
+            const data = await res.json();
+                reply = data.response || '';
+                lang = data.lang || 'en';
+            }
+            botState.textContent = 'Bot: speaking…';
+            finalSegments.push({ text: `\nAssistant: ${reply}`, ts: Date.now() });
+            renderTranscript();
+            await speakStreaming(reply, lang);
         }
 
             ws.onerror = (e) => {
@@ -246,30 +291,66 @@
 
         async function handleUserUtterance(text) {
             if (!text || !text.trim()) return;
-            // Stop any ongoing TTS (barge-in)
             stopTtsPlayback();
-            botState.textContent = 'Bot: thinking…';
-            // Ask backend LLM
-            const res = await fetch('/respond', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ text })
-            });
-            const data = await res.json();
-            const reply = data.response || '';
-            const lang = data.lang || 'en';
-            // Append bot text to transcript area
-            finalSegments.push({ text: `\nAssistant: ${reply}`, ts: Date.now() });
-            renderTranscript();
-            // Request TTS via GET stream to simplify playback
-            botState.textContent = 'Bot: speaking…';
-            const q = new URLSearchParams({ text: reply, lang });
-            ttsAudio.src = `/tts-stream?${q.toString()}`;
-            playingTts = true;
+            await playResponseFor(text);
+        }
+
+        async function speakStreaming(reply, lang) {
+            // Prefer low-latency MediaSource streaming; fallback to GET src
+            try {
+                mediaSource = new MediaSource();
+                const objUrl = URL.createObjectURL(mediaSource);
+                ttsAudio.src = objUrl;
+                playingTts = true;
+                await new Promise((resolve) => {
+                    mediaSource.addEventListener('sourceopen', resolve, { once: true });
+                });
+                sourceBuffer = mediaSource.addSourceBuffer('audio/mpeg');
+                sourceBuffer.mode = 'segments';
+                sourceBuffer.addEventListener('updateend', () => {
+                    if (sbQueue.length && !sourceBuffer.updating) {
+                        sourceBuffer.appendBuffer(sbQueue.shift());
+                    }
+                    if (!sbQueue.length && !sourceBuffer.updating && mediaSource.readyState === 'open' && ttsDone) {
+                        try { mediaSource.endOfStream(); } catch {}
+                    }
+                });
+                let ttsDone = false;
+                const res = await fetch('/tts', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text: reply, lang }) });
+                if (!res.ok || !res.body) throw new Error('TTS request failed');
+                const reader = res.body.getReader();
+                const pump = async () => {
+                    const { done, value } = await reader.read();
+                    if (done) {
+                        ttsDone = true;
+                        if (!sourceBuffer.updating && mediaSource.readyState === 'open') {
+                            try { mediaSource.endOfStream(); } catch {}
+                        }
+                        return;
+                    }
+                    if (value && value.byteLength) {
+                        if (sourceBuffer.updating || sbQueue.length) {
+                            sbQueue.push(value.buffer.slice(0));
+                        } else {
+                            try { sourceBuffer.appendBuffer(value.buffer); } catch {
+                                sbQueue.push(value.buffer.slice(0));
+                            }
+                        }
+                    }
+                    pump();
+                };
+                pump();
+            } catch (e) {
+                // Fallback: direct src to GET stream
+                const q = new URLSearchParams({ text: reply, lang });
+                ttsAudio.src = `/tts-stream?${q.toString()}`;
+                playingTts = true;
+            }
             ttsAudio.onended = () => {
                 playingTts = false;
                 botState.textContent = 'Bot: idle';
             };
+            try { await ttsAudio.play(); } catch {}
         }
 
         startBtn.addEventListener('click', async () => {
@@ -285,6 +366,9 @@
                 return;
             }
             micState.textContent = 'Mic: recording';
+            // reset any pending LLM draft from previous turn
+            pendingReplyPromise = null;
+            pendingReplyText = '';
 
             const selected = languageSelect.value;
             const languageHints = selected === 'auto' ? ['en','fr','nl'] : [selected];
