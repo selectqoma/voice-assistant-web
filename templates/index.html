@@ -1,0 +1,113 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Voice Assistant Demo</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 2rem;
+            line-height: 1.5;
+        }
+        h1 {
+            margin-bottom: 1rem;
+        }
+        section {
+            margin-bottom: 2rem;
+        }
+        label {
+            display: block;
+            margin-bottom: 0.5rem;
+        }
+        input[type="file"],
+        input[type="text"] {
+            margin-bottom: 0.5rem;
+        }
+        button {
+            cursor: pointer;
+            padding: 0.5rem 1rem;
+            background-color: #007bff;
+            color: white;
+            border: none;
+            border-radius: 4px;
+        }
+        button:disabled {
+            background-color: #aaa;
+        }
+        .output {
+            margin-top: 1rem;
+            padding: 0.75rem;
+            background-color: #f5f5f5;
+            border-radius: 4px;
+        }
+    </style>
+</head>
+<body>
+    <h1>Voice Assistant Demo</h1>
+    <section id="stt-section">
+        <h2>Upload Audio for Transcription</h2>
+        <form id="uploadForm">
+            <label for="audio">Choose an audio file (wav/mp3)</label>
+            <input type="file" id="audio" name="audio" accept="audio/*" required>
+            <button type="submit">Transcribe</button>
+        </form>
+        <div id="transcriptionResult" class="output" style="display:none;"></div>
+    </section>
+    <section id="chat-section">
+        <h2>Chat with the Assistant</h2>
+        <label for="message">Enter your message</label>
+        <input type="text" id="message" placeholder="Type something..." required>
+        <button id="sendBtn">Send</button>
+        <div id="responseResult" class="output" style="display:none;"></div>
+    </section>
+
+    <script>
+        // Handle audio upload and transcription
+        document.getElementById('uploadForm').addEventListener('submit', async function (e) {
+            e.preventDefault();
+            const fileInput = document.getElementById('audio');
+            const file = fileInput.files[0];
+            if (!file) return;
+            const formData = new FormData();
+            formData.append('audio', file);
+            const res = await fetch('/transcribe', {
+                method: 'POST',
+                body: formData
+            });
+            const data = await res.json();
+            const outputDiv = document.getElementById('transcriptionResult');
+            if (data.transcription) {
+                outputDiv.textContent = data.transcription;
+                outputDiv.style.display = 'block';
+            } else if (data.error) {
+                outputDiv.textContent = 'Error: ' + data.error;
+                outputDiv.style.display = 'block';
+            }
+        });
+
+        // Handle sending text message and receiving response
+        document.getElementById('sendBtn').addEventListener('click', async function () {
+            const messageInput = document.getElementById('message');
+            const text = messageInput.value.trim();
+            if (!text) return;
+            const res = await fetch('/respond', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({ text })
+            });
+            const data = await res.json();
+            const outputDiv = document.getElementById('responseResult');
+            if (data.response) {
+                outputDiv.textContent = data.response;
+                outputDiv.style.display = 'block';
+            } else if (data.error) {
+                outputDiv.textContent = 'Error: ' + data.error;
+                outputDiv.style.display = 'block';
+            }
+        });
+    </script>
+</body>
+</html>
