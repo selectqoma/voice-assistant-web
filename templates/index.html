@@ -146,9 +146,9 @@
                 connState.textContent = 'WS: connected';
                 const config = {
                     api_key: tempKey,
-                    model,
                     audio_format: 'pcm_s16le',
                     sample_rate_hz: sampleRate,
+                    num_channels: 1,
                     language_hints: languageHints,
                     interim_results: true
                 };
@@ -325,9 +325,9 @@
             audioCtx = new (window.AudioContext || window.webkitAudioContext)();
             const sampleRate = audioCtx.sampleRate; // typically 44100 or 48000
             // Get dev temp key/config then open Soniox WS directly
-            const { temp_key, model, language_hints } = await fetchTempKey(languageHints);
-            // Force a known valid RT model if backend returns legacy value
-            const rtModel = (model && model.includes('stt')) ? model : 'stt-rt';
+            const { temp_key } = await fetchTempKey(languageHints);
+            // Use recommended RT model string
+            const rtModel = 'soniox/embedded/v1/rt';
             openSonioxSocketDirect(temp_key, rtModel, language_hints, sampleRate);
 
             const source = audioCtx.createMediaStreamSource(mediaStream);
