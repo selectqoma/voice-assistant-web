@@ -48,7 +48,7 @@ SONIOX_API_KEY = os.getenv("SONIOX_API_KEY", "")
 ELEVEN_API_KEY = os.getenv("ELEVEN_API_KEY", "")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 
-DEFAULT_SONIOX_MODEL_ID = os.getenv("SONIOX_MODEL_ID", "en_v2")
+DEFAULT_SONIOX_MODEL = os.getenv("SONIOX_MODEL", "en_v2")
 DEFAULT_LANGUAGE_HINTS = os.getenv("LANGUAGE_HINTS", "en,fr,nl").split(",")
 DEFAULT_ELEVEN_VOICE_EN = os.getenv("ELEVEN_VOICE_EN", "21m00Tcm4TlvDq8ikWAM")
 DEFAULT_ELEVEN_VOICE_FR = os.getenv("ELEVEN_VOICE_FR", "EXAVITQu4vr4xnSDxMaL")
@@ -311,7 +311,7 @@ def soniox_temp_key():
     # WARNING: For demo only. Do not expose real key to browser in production.
     return jsonify({
         "temp_key": SONIOX_API_KEY,
-        "model_id": DEFAULT_SONIOX_MODEL_ID,
+        "model": DEFAULT_SONIOX_MODEL,
         "language_hints": lang_hints or DEFAULT_LANGUAGE_HINTS,
     })
 
