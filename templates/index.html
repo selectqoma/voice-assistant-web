@@ -136,17 +136,28 @@
             return res.json();
         }
 
-        function openSonioxSocketProxy(model, languageHints, sampleRate) {
-            const url = (location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/ws/stt';
+        function openSonioxSocketDirect(tempKey, model, languageHints, sampleRate) {
+            const url = 'wss://stt-rt.soniox.com/transcribe-websocket';
             ws = new WebSocket(url);
             ws.binaryType = 'arraybuffer';
             ws.onopen = () => {
                 connState.textContent = 'WS: connected';
-                ws.send(JSON.stringify({ model, language_hints: languageHints, sample_rate_hz: sampleRate }));
+                const config = {
+                    api_key: tempKey,
+                    model,
+                    audio_format: 'pcm_s16le',
+                    sample_rate_hz: sampleRate,
+                    language_hints: languageHints,
+                    interim_results: true
+                };
+                ws.send(JSON.stringify(config));
             };
             ws.onmessage = (event) => {
                 try {
-                    const msg = JSON.parse(event.data);
+                    if (typeof event.data !== 'string') return; // ignore binary
+                    const txt = event.data.trim();
+                    if (!txt) return;
+                    const msg = JSON.parse(txt);
                     // Example handling: { type: 'transcript', items: [{text, is_final}] }
                     if (msg.type === 'transcript' && Array.isArray(msg.items)) {
                         let anyFinal = false;
@@ -289,9 +300,9 @@
             // Set up PCM streaming via Web Audio API using AudioWorklet
             audioCtx = new (window.AudioContext || window.webkitAudioContext)();
             const sampleRate = audioCtx.sampleRate; // typically 44100 or 48000
-            // Use server proxy to avoid browser WS auth and CORS issues
-            const { model, language_hints } = await fetchTempKey(languageHints);
-            openSonioxSocketProxy(model, language_hints, sampleRate);
+            // Get dev temp key/config then open Soniox WS directly
+            const { temp_key, model, language_hints } = await fetchTempKey(languageHints);
+            openSonioxSocketDirect(temp_key, model, language_hints, sampleRate);
 
             const source = audioCtx.createMediaStreamSource(mediaStream);
             try {
