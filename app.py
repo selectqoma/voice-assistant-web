@@ -32,6 +32,8 @@ from flask import Flask, render_template, request, jsonify, Response, send_from_
 from flask_sock import Sock
 from dotenv import load_dotenv
 import httpx
+import threading
+import websocket
 from langdetect import detect
 
 load_dotenv()
@@ -173,6 +175,114 @@ def tts_route():
 @app.route('/static/<path:filename>')
 def static_files(filename: str):
     return send_from_directory(os.path.join(app.root_path, 'static'), filename)
+
+
+@sock.route('/ws/stt')
+def stt_proxy(ws_client):
+    """Proxy between browser and Soniox RT WS to improve reliability and enable logging.
+
+    Protocol:
+    - Client first sends a JSON config: { language_hints: [..], sample_rate_hz: 48000 }
+    - Then client sends raw PCM S16LE binary frames. We forward directly to Soniox.
+    - We forward Soniox JSON messages back to the client as text.
+    - On client close, we send EOS to Soniox and close.
+    """
+    if not SONIOX_API_KEY:
+        ws_client.send(json.dumps({"type": "error", "message": "Missing SONIOX_API_KEY"}))
+        return
+
+    # Wait for initial JSON config from client
+    try:
+        raw_first = ws_client.receive()
+        if isinstance(raw_first, (bytes, bytearray)):
+            # If audio is sent before config, close
+            ws_client.send(json.dumps({"type": "error", "message": "Expected JSON config first"}))
+            return
+        cfg_msg = json.loads(raw_first or '{}')
+    except Exception as e:
+        ws_client.send(json.dumps({"type": "error", "message": f"Invalid config: {e}"}))
+        return
+
+    language_hints = cfg_msg.get('language_hints') or DEFAULT_LANGUAGE_HINTS
+    sample_rate_hz = int(cfg_msg.get('sample_rate_hz') or 48000)
+    model = cfg_msg.get('model') or DEFAULT_SONIOX_MODEL
+
+    # Connect to Soniox
+    soniox_url = 'wss://stt-rt.soniox.com/transcribe-websocket'
+    try:
+        ws_sr = websocket.create_connection(soniox_url, sslopt={"cert_reqs": 0})
+    except Exception as e:
+        ws_client.send(json.dumps({"type": "error", "message": f"Failed to connect Soniox: {e}"}))
+        return
+
+    # Send Soniox config
+    soniox_config = {
+        "api_key": SONIOX_API_KEY,
+        "model": model,
+        "audio_format": "pcm_s16le",
+        "sample_rate_hz": sample_rate_hz,
+        "language_hints": language_hints,
+        "interim_results": True,
+    }
+    try:
+        ws_sr.send(json.dumps(soniox_config))
+    except Exception as e:
+        ws_client.send(json.dumps({"type": "error", "message": f"Failed to send config to Soniox: {e}"}))
+        try:
+            ws_sr.close()
+        except Exception:
+            pass
+        return
+
+    stop_flag = {"stop": False}
+
+    def pipe_sr_to_client():
+        try:
+            while not stop_flag["stop"]:
+                msg = ws_sr.recv()
+                if msg is None:
+                    break
+                # Soniox sends text JSON; forward as-is
+                if isinstance(msg, (bytes, bytearray)):
+                    # Ignore unexpected binary from Soniox
+                    continue
+                ws_client.send(msg)
+        except Exception:
+            # Connection closed or errored
+            pass
+
+    t = threading.Thread(target=pipe_sr_to_client, daemon=True)
+    t.start()
+
+    # Receive audio from client and forward
+    try:
+        while True:
+            frame = ws_client.receive()
+            if frame is None:
+                break
+            if isinstance(frame, (bytes, bytearray)):
+                try:
+                    ws_sr.send_binary(frame)
+                except Exception:
+                    break
+            else:
+                # JSON text from client: check eos
+                try:
+                    obj = json.loads(frame)
+                    if obj.get('eos'):
+                        try:
+                            ws_sr.send(json.dumps({"eos": True}))
+                        except Exception:
+                            pass
+                        break
+                except Exception:
+                    continue
+    finally:
+        stop_flag["stop"] = True
+        try:
+            ws_sr.close()
+        except Exception:
+            pass
 
 # Simple WebSocket endpoint to forward STT events to/from client if needed in future
 # For now, we will do Soniox WS directly from client with a temp key endpoint below.
