@@ -311,7 +311,6 @@ def soniox_temp_key():
     # WARNING: For demo only. Do not expose real key to browser in production.
     return jsonify({
         "temp_key": SONIOX_API_KEY,
-        "model": DEFAULT_SONIOX_MODEL,
         "language_hints": lang_hints or DEFAULT_LANGUAGE_HINTS,
     })
 
