@@ -45,8 +45,32 @@
 </head>
 <body>
     <h1>Voice Assistant Demo</h1>
+    <section id="live-stt">
+        <h2>Live Conversation</h2>
+        <div style="margin-bottom: 0.5rem;">
+            <label for="languageSelect">Language</label>
+            <select id="languageSelect">
+                <option value="auto" selected>Auto</option>
+                <option value="en">English</option>
+                <option value="fr">Français</option>
+                <option value="nl">Nederlands</option>
+            </select>
+        </div>
+        <div style="display:flex; gap:0.5rem; margin-bottom:0.5rem;">
+            <button id="startBtn">Start</button>
+            <button id="stopBtn" disabled>Stop</button>
+        </div>
+        <div id="indicators" style="display:flex; gap:1rem; align-items:center;">
+            <span id="micState">Mic: idle</span>
+            <span id="connState">WS: disconnected</span>
+            <span id="botState">Bot: idle</span>
+        </div>
+        <div id="transcript" class="output" style="height: 180px; overflow:auto; margin-top:0.75rem;"></div>
+        <audio id="ttsAudio" autoplay></audio>
+    </section>
+    <hr />
     <section id="stt-section">
-        <h2>Upload Audio for Transcription</h2>
+        <h2>Upload Audio for Transcription (legacy demo)</h2>
         <form id="uploadForm">
             <label for="audio">Choose an audio file (wav/mp3)</label>
             <input type="file" id="audio" name="audio" accept="audio/*" required>
@@ -55,7 +79,7 @@
         <div id="transcriptionResult" class="output" style="display:none;"></div>
     </section>
     <section id="chat-section">
-        <h2>Chat with the Assistant</h2>
+        <h2>Chat with the Assistant (text)</h2>
         <label for="message">Enter your message</label>
         <input type="text" id="message" placeholder="Type something..." required>
         <button id="sendBtn">Send</button>
@@ -63,7 +87,7 @@
     </section>
 
     <script>
-        // Handle audio upload and transcription
+        // Handle audio upload and transcription (legacy demo)
         document.getElementById('uploadForm').addEventListener('submit', async function (e) {
             e.preventDefault();
             const fileInput = document.getElementById('audio');
@@ -106,6 +130,242 @@
             } else if (data.error) {
                 outputDiv.textContent = 'Error: ' + data.error;
                 outputDiv.style.display = 'block';
+            }
+        });
+
+        // Live STT with Soniox via direct WebSocket
+        const startBtn = document.getElementById('startBtn');
+        const stopBtn = document.getElementById('stopBtn');
+        const micState = document.getElementById('micState');
+        const connState = document.getElementById('connState');
+        const botState = document.getElementById('botState');
+        const transcriptDiv = document.getElementById('transcript');
+        const languageSelect = document.getElementById('languageSelect');
+        const ttsAudio = document.getElementById('ttsAudio');
+
+        let mediaStream = null;
+        let mediaRecorder = null;
+        let ws = null;
+        let isRecording = false;
+        let currentPartial = '';
+        let finalSegments = [];
+        let playingTts = false;
+
+        function renderTranscript() {
+            const finalText = finalSegments.map(s => s.text).join(' ');
+            transcriptDiv.innerHTML = '';
+            const finalEl = document.createElement('div');
+            finalEl.textContent = finalText;
+            finalEl.style.color = '#222';
+            transcriptDiv.appendChild(finalEl);
+            if (currentPartial) {
+                const partialEl = document.createElement('div');
+                partialEl.textContent = currentPartial;
+                partialEl.style.color = '#777';
+                transcriptDiv.appendChild(partialEl);
+            }
+            transcriptDiv.scrollTop = transcriptDiv.scrollHeight;
+        }
+
+        function stopTtsPlayback() {
+            if (!playingTts) return;
+            ttsAudio.pause();
+            // Reset src to stop streaming playback
+            ttsAudio.src = '';
+            playingTts = false;
+            botState.textContent = 'Bot: idle';
+        }
+
+        async function fetchTempKey(languageHints) {
+            const res = await fetch('/soniox-temp-key', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ language_hints: languageHints })
+            });
+            if (!res.ok) throw new Error('Failed to get temp key');
+            return res.json();
+        }
+
+        function openSonioxSocket(tempKey, model, languageHints) {
+            // Soniox RT endpoint
+            const url = 'wss://stt-rt.soniox.com/transcribe-websocket';
+            ws = new WebSocket(url);
+
+            ws.binaryType = 'arraybuffer';
+            ws.onopen = () => {
+                connState.textContent = 'WS: connected';
+                // Send config first
+                const config = {
+                    api_key: tempKey,
+                    model: model,
+                    audio_format: 'auto',
+                    language_hints: languageHints,
+                    enable_abort: true,
+                    interim_results: true
+                };
+                ws.send(JSON.stringify({ config }));
+            };
+            ws.onmessage = (event) => {
+                try {
+                    const msg = JSON.parse(event.data);
+                    // Example handling: { type: 'transcript', items: [{text, is_final}] }
+                    if (msg.type === 'transcript' && Array.isArray(msg.items)) {
+                        let anyFinal = false;
+                        msg.items.forEach(item => {
+                            if (item.is_final) {
+                                finalSegments.push({ text: item.text, ts: Date.now() });
+                                currentPartial = '';
+                                anyFinal = true;
+                            } else {
+                                currentPartial = item.text;
+                            }
+                        });
+                        renderTranscript();
+                        if (anyFinal) {
+                            // On endpoint detection heuristic: if item has endpoint flag
+                            if (msg.endpoint || !isRecording) {
+                                const userText = finalSegments.map(s => s.text).join(' ');
+                                handleUserUtterance(userText);
+                                finalSegments = [];
+                                currentPartial = '';
+                                renderTranscript();
+                            }
+                        }
+                    } else if (msg.type === 'endpoint') {
+                        const userText = finalSegments.map(s => s.text).join(' ');
+                        handleUserUtterance(userText);
+                        finalSegments = [];
+                        currentPartial = '';
+                        renderTranscript();
+                    } else if (msg.type === 'error') {
+                        console.error('Soniox error', msg);
+                    }
+                } catch (e) {
+                    console.error('WS message parse error', e);
+                }
+            };
+            ws.onerror = (e) => {
+                console.error('WS error', e);
+                connState.textContent = 'WS: error';
+            };
+            ws.onclose = () => {
+                connState.textContent = 'WS: disconnected';
+            };
+        }
+
+        async function handleUserUtterance(text) {
+            if (!text || !text.trim()) return;
+            // Stop any ongoing TTS (barge-in)
+            stopTtsPlayback();
+            botState.textContent = 'Bot: thinking…';
+            // Ask backend LLM
+            const res = await fetch('/respond', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ text })
+            });
+            const data = await res.json();
+            const reply = data.response || '';
+            const lang = data.lang || 'en';
+            // Append bot text to transcript area
+            finalSegments.push({ text: `\nAssistant: ${reply}`, ts: Date.now() });
+            renderTranscript();
+            // Request TTS stream
+            botState.textContent = 'Bot: speaking…';
+            const ttsRes = await fetch('/tts', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ text: reply, lang })
+            });
+            if (!ttsRes.ok) {
+                botState.textContent = 'Bot: TTS error';
+                return;
+            }
+            // Create object URL from streaming body
+            const reader = ttsRes.body.getReader();
+            const stream = new ReadableStream({
+                start(controller) {
+                    function push() {
+                        reader.read().then(({ done, value }) => {
+                            if (done) {
+                                controller.close();
+                                playingTts = false;
+                                botState.textContent = 'Bot: idle';
+                                return;
+                            }
+                            controller.enqueue(value);
+                            push();
+                        });
+                    }
+                    push();
+                }
+            });
+            const response = new Response(stream, { headers: { 'Content-Type': 'audio/mpeg' }});
+            const blob = await response.blob();
+            const url = URL.createObjectURL(blob);
+            ttsAudio.src = url;
+            playingTts = true;
+            ttsAudio.onended = () => {
+                playingTts = false;
+                botState.textContent = 'Bot: idle';
+                URL.revokeObjectURL(url);
+            };
+        }
+
+        startBtn.addEventListener('click', async () => {
+            if (isRecording) return;
+            stopTtsPlayback(); // barge-in: stop bot speech immediately
+            finalSegments = [];
+            currentPartial = '';
+            renderTranscript();
+            try {
+                mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+            } catch (e) {
+                alert('Microphone permission denied');
+                return;
+            }
+            micState.textContent = 'Mic: recording';
+
+            const selected = languageSelect.value;
+            const languageHints = selected === 'auto' ? ['en','fr','nl'] : [selected];
+            const { temp_key, model, language_hints } = await fetchTempKey(languageHints);
+            openSonioxSocket(temp_key, model, language_hints);
+
+            // Use MediaRecorder with audio/webm;codecs=opus when available
+            const options = { mimeType: 'audio/webm;codecs=opus' };
+            try {
+                mediaRecorder = new MediaRecorder(mediaStream, options);
+            } catch (e) {
+                mediaRecorder = new MediaRecorder(mediaStream);
+            }
+
+            mediaRecorder.ondataavailable = (ev) => {
+                if (ws && ws.readyState === WebSocket.OPEN && ev.data && ev.data.size > 0) {
+                    ev.data.arrayBuffer().then(buf => {
+                        ws.send(buf);
+                    });
+                }
+            };
+            mediaRecorder.onstop = () => {
+                if (ws && ws.readyState === WebSocket.OPEN) {
+                    ws.send(JSON.stringify({ eos: true }));
+                }
+            };
+            mediaRecorder.start(200); // 200ms chunks
+            isRecording = true;
+            startBtn.disabled = true;
+            stopBtn.disabled = false;
+        });
+
+        stopBtn.addEventListener('click', () => {
+            if (!isRecording) return;
+            isRecording = false;
+            startBtn.disabled = false;
+            stopBtn.disabled = true;
+            micState.textContent = 'Mic: idle';
+            try { mediaRecorder.stop(); } catch {}
+            if (mediaStream) {
+                mediaStream.getTracks().forEach(t => t.stop());
             }
         });
     </script>
