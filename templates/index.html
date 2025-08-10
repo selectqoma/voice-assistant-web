@@ -192,6 +192,22 @@
                         currentPartial = partialWords.join(' ');
                         renderTranscript();
                         resetEndpointTimer();
+                    } else if (Array.isArray(msg.tokens)) {
+                        // Schema with tokens array
+                        let anyFinal = false;
+                        const partialTokens = [];
+                        msg.tokens.forEach(t => {
+                            if (t.is_final) {
+                                finalSegments.push({ text: t.text, ts: Date.now() });
+                                anyFinal = true;
+                            } else {
+                                partialTokens.push(t.text);
+                            }
+                        });
+                        // Join tokens without space to support languages without whitespace
+                        currentPartial = partialTokens.join('');
+                        renderTranscript();
+                        resetEndpointTimer();
                     } else if (msg.type === 'endpoint') {
                         const userText = finalSegments.map(s => s.text).join(' ');
                         handleUserUtterance(userText);
